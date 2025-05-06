@@ -1,97 +1,267 @@
 #include <Servo.h>
 
-// We make Servo objects
-Servo panServo;  // Up and down
-Servo tiltServo; // Left and right
+// PID class
+class PIDController
+{
+public:
+    PIDController(float p, float i, float d)
+    {
+        Kp = p;
+        Ki = i;
+        Kd = d;
+        integral = 0;
+        prevError = 0;
+        maxIntegral = 20;
+        lastTime = 0;
+    }
 
-// Here we define the pins for our servos
-const int panPin = 3;  // Signal pin for the pan servo
-const int tiltPin = 9; // Signal pin for the tilt servo
+    // This function computes the derivative and integral
+    float compute_D_and_I(float error)
+    {
+        unsigned long now = millis(); // start counting the milliseconds here
 
-// Starting positions for both the servos- This makes them aim in the middle
-int panPos = 90;
-int tiltPos = 90;
+        // dt = change in time from now to our last recording (lastTime is 0 for the first loop)
+        float dt = (now - lastTime) / 1000.0; // We divide by 1000 here to get dt in seconds not milliseconds
 
-const int smoothDelay = 0; // There will be no delay for the position updates
-const int smallStep = 40;  // The larger the step the faster the servo moves
+        if (dt > 0.01)
+        { // Minimum time step (100 Hz or 0.01 seconds): this means this part will only run every 0.01 seconds
+
+            // Now we calculate our integral by multiplying our error with the time and adding it to integral: integral compounds to larger and larger values over time
+            integral += error * dt;
+            integral = constrain(integral, -maxIntegral, maxIntegral); // Since it compounds over time we need to set a limit to how high it can go
+
+            // The effect integral creates is that of "momentum" where it will chase after the boat and if it cant catch it over time itll increase the speed at which its chasing
+
+            // Derivative is found by finding the difference of our current error and our error 0.01 seconds ago and then dividing that by 0.01 which tells us if the error is inccreasing or decreasing
+            // If the error is increasing (Derivative is +) then we speed up the chase and if its decreasing (Derivative is -) then we slow down a little to not overshoot
+
+            float derivative = (dt > 0) ? (error - prevError) / dt : 0; // we could've made this simpler but we are tyring to not divide by 0
+
+            // Note that the integral keeps us moving with momentum and the derivative slows us down, they kinda counteract each other like they do in math :)
+            float output = Kp * error + Ki * integral + Kd * derivative; // Kp is how much the distance between where we are and where we wanna be matters, Ki is how much the time for which we have been chasing matters and Kd is how much the speed of wheather we are getting closer to the location or further matters.
+
+            // kinda like incermenting we are setting our current error and time as our previos error and time to prepare for the next cycle
+            prevError = error;
+            lastTime = now;
+
+            return output; // output is a number in degrees of movement that tells us how many degrees to move : Note that it does not tell us absolute posoition and tells us how to move relitivily
+        }
+        return 0;
+    }
+
+    // We need this function for when we lose tracking of an object and redetect it because we cant carry that old integral or else we will have crazy high momentum
+    void reset()
+    {
+        integral = 0;
+        prevError = 0;
+        lastTime = millis();
+    }
+
+    // This is just to tweak the PID values
+    void setTunings(float p, float i, float d)
+    {
+        Kp = p;
+        Ki = i;
+        Kd = d;
+    }
+
+private:
+    float Kp, Ki, Kd;
+    float integral;
+    float prevError;
+    unsigned long lastTime;
+    float maxIntegral;
+};
+
+// Here we are making 2 Servo Objects for our two servos
+Servo panServo;
+Servo tiltServo;
+
+// D3 is the pan signal wire and D9 is the tilt signal wire
+const int panPin = 3;
+const int tiltPin = 9;
+
+// PID Controllers - much lower values for stability
+PIDController panPID(0.2, 0.0, 0.05);  // Zero integral component for stability
+PIDController tiltPID(0.2, 0.0, 0.05); // Zero integral component for stability
+
+// Current positions
+int currentPan = 90;
+int currentTilt = 90;
+
+// Target positions, We start with the target being the center
+int targetPan = 90;
+int targetTilt = 90;
+
+// Smooth movement variables
+unsigned long lastMoveTime = 0;
+const unsigned long moveInterval = 20; // Update every 20ms for 50Hz (more stable): This here is what will affect the responsiveness of the camera
+
+// How much the servos are allows to move in one cycle
+int max_degrees_movement = 4;
+
+// This will be the minimum number for the error for which the camera will begin to move
+int deadzone_pan = 0.5;
+int deadzone_tilt = 0.5;
+
+// CRITICAL: Command timeout to prevent erratic movement when Python app closes
+unsigned long lastCommandTime = 0;
+const unsigned long commandTimeout = 1000; // 1 second timeout
 
 void setup()
 {
-    Serial.begin(115200); // We open a connection to our connected computer with 115200 baud rate
-
-    // Now we attach the right pins to each servo object
+    Serial.begin(115200);
     panServo.attach(panPin);
     tiltServo.attach(tiltPin);
 
-    // Now we center our camera for startup
-    panServo.write(panPos);
-    tiltServo.write(tiltPos);
-    delay(500); // We delay to allow our motors to get into position
+    // Initialize PID timers
+    panPID.reset();
+    tiltPID.reset();
 
-    Serial.println("Pan-Tilt Camera Ready"); // This notifies our connected computer that we are ready
+    // Center servos and stay there
+    targetPan = 90;
+    targetTilt = 90;
+    currentPan = 90;
+    currentTilt = 90;
+
+    // Move to initial position (center the camera)
+    panServo.write(currentPan);
+    tiltServo.write(currentTilt);
+    delay(500); // Give the camera some time to center
+
+    // Send ready signal to the Pi
+    Serial.println("READY");
+
+    // Set initial command time
+    lastCommandTime = millis();
 }
 
 void loop()
 {
-    // We first need to check if data is ready to be read or if data has been sent
+    // Update motion at fixed intervals
+    unsigned long currentTime = millis(); // We find the current time which we will use to compare to the last time we got a command
+
+    // Check for command timeout - CRITICAL to prevent spazzing when Python closes - This is because when the Python script closes we won't recieve any message
+    if (currentTime - lastCommandTime > commandTimeout)
+    {
+        // If no commands for a while, reset targets to center
+        targetPan = 90;
+        targetTilt = 90;
+
+        // Reset PID controllers to prevent accumulated errors
+        if (currentTime - lastCommandTime > commandTimeout + 500)
+        {
+            panPID.reset();
+            tiltPID.reset();
+        }
+    }
+
+    // Process movement at a regular interval
+    if (currentTime - lastMoveTime >= moveInterval)
+    {
+        lastMoveTime = currentTime;
+
+        // Calculate errors for both pan and tilt : Note that the error will be 0 on startup
+        float panError = targetPan - currentPan;
+        float tiltError = targetTilt - currentTilt;
+
+        // Only move if outside a small deadzone
+        if (abs(panError) > deadzone_pan || abs(tiltError) > deadzone_tilt)
+        {
+            // Calculate PID outputs
+            float panOutput = panPID.compute(panError);
+            float tiltOutput = tiltPID.compute(tiltError);
+
+            // Limit maximum movement speed, this force the camera to move in these "steps" that are going to be as big as our max_degrees_movement variable
+            panOutput = constrain(panOutput, -max_degrees_movement, max_degrees_movement);
+            tiltOutput = constrain(tiltOutput, -max_degrees_movement, max_degrees_movement);
+
+            // Apply output to current positions
+            currentPan += panOutput;
+            currentTilt += tiltOutput;
+
+            // Constrain final positions: this is to not push the servo beyond what it can move
+            currentPan = constrain(currentPan, 0, 180);
+            currentTilt = constrain(currentTilt, 0, 180);
+
+            // Move servos
+            panServo.write(currentPan);
+            tiltServo.write(currentTilt);
+        }
+    }
+
+    // Check for commands
     if (Serial.available() > 0)
     {
-        // If data is available to read
-        String command = Serial.readStringUntil('\n'); // We will read whatever our input is until we encounter a newline which indicated end of message
-        command.trim();                                // This line removed any whitespaces from our read command
+        String command = Serial.readStringUntil('\n'); // Listening to the Pi for any messages
+        command.trim();                                // remove whitespace
 
-        // If logic has reached here it means we have recieved a message and it has been cleaned
-        // Now we need to corrospond each expected input with what kind movement we want with the sensor
-        if (command.startsWith("PAN:"))
+        if (command.startsWith("PT:"))
         {
-            // This means the user wants to move our PAN motor to a certain angle
-            int angle = command.substring(4).toInt(); // Here we are taking the substring after index 4 or in other words we are taking the 5th letter (because 0 indexed string) and onwards
-
-            // Angle now is an integer which will be the angle the user wants to move the motor to
-            angle = constrain(angle, 0, 180); // I am doing this incase we send an angle higher than 180 or less than 0, in case that happens itll set it to eiether 0 or 180
-            // the contstrain is more of a safety thing
-
-            // Now to actually move our motor
-            panServo.write(angle);
-            Serial.print("Pan set to: ");
-            Serial.print(angle);
-        }
-
-        // Now to cover TILT and Pan and TILT both in one command
-        else if (command.startsWith("TILT:"))
-        {
-            int angle = command.substring(5).toInt();
-            angle = constrain(angle, 0, 180);
-            tiltServo.write(angle);
-            tiltPos = angle;
-            Serial.print("Tilt set to: ");
-            Serial.println(angle);
-        }
-
-        else if (command.startsWith("PT:"))
-        {
-            // Combined pan and tilt command this will be a bit more complicated with parsing
-            int commaIndex = command.indexOf(',', 3); // This line just finds us the index at which the comma is located in our string, the 3 is there because we know the first 3 characters are not the comma so we start searching from 3
-            // We will use this comma index to seperate our pan and tilt angle values we recieved from our computer
+            int commaIndex = command.indexOf(',', 3); // Start searching for where the servos should be aiming after the 3rd index
             if (commaIndex > 0)
             {
-                // if our recieved message does infact have a comma then we take our angles
-                int panAngle = command.substring(3, commaIndex).toInt();   // This find the string after the : in PT: and this string ends at the comma
-                int tiltAngle = command.substring(commaIndex + 1).toInt(); // This one starts at the comma and ends at the end of the recieved message
+                // Extract target positions
+                targetPan = command.substring(3, commaIndex).toInt();
+                targetTilt = command.substring(commaIndex + 1).toInt();
 
-                panAngle = constrain(panAngle, 0, 180);
-                tiltAngle = constrain(tiltAngle, 0, 180);
+                // Constrain to valid servo range : This part is important because if our servos are already at lets say 180 180, the PI does not know that and it will still tell us to turn the servos to 180 180 if the Benchy is on the edge of the screen.
+                targetPan = constrain(targetPan, 0, 180);
+                targetTilt = constrain(targetTilt, 0, 180);
 
-                panServo.write(panAngle);
-                tiltServo.write(tiltAngle);
-                panPos = panAngle;
-                tiltPos = tiltAngle;
+                // Update command time - CRITICAL to track when last command was received
+                lastCommandTime = millis();
 
-                Serial.print("Pan set to: ");
-                Serial.print(panAngle);
-                Serial.print(", Tilt set to: ");
-                Serial.println(tiltAngle);
+                // Send feedback
+                Serial.print("PT:");
+                Serial.print(currentPan);
+                Serial.print(",");
+                Serial.println(currentTilt);
             }
+        }
+        else if (command.startsWith("TUNE:"))
+        {
+            // Format: TUNE:axis,P,I,D (axis: 0=pan, 1=tilt)
+            // Example: TUNE:0,0.5,0.01,0.1
+            int commaIndex1 = command.indexOf(',', 5);
+            int commaIndex2 = command.indexOf(',', commaIndex1 + 1);
+            int commaIndex3 = command.indexOf(',', commaIndex2 + 1);
+
+            if (commaIndex3 > 0)
+            {
+                int axis = command.substring(5, commaIndex1).toInt();
+                float p = command.substring(commaIndex1 + 1, commaIndex2).toFloat();
+                float i = command.substring(commaIndex2 + 1, commaIndex3).toFloat();
+                float d = command.substring(commaIndex3 + 1).toFloat();
+
+                if (axis == 0)
+                {
+                    panPID.setTunings(p, i, d);
+                }
+                else if (axis == 1)
+                {
+                    tiltPID.setTunings(p, i, d);
+                }
+
+                // Update command time
+                lastCommandTime = millis();
+
+                Serial.println("TUNED");
+            }
+        }
+        else if (command == "RESET")
+        {
+            // Emergency reset - center servos and reset PID
+            targetPan = 90;
+            targetTilt = 90;
+            currentPan = 90;
+            currentTilt = 90;
+            panServo.write(currentPan);
+            tiltServo.write(currentTilt);
+            panPID.reset();
+            tiltPID.reset();
+
+            Serial.println("RESET_OK");
         }
     }
 }
