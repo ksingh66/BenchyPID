@@ -1,4 +1,13 @@
 
+
+"""
+Object detection and Arduino-controlled PTZ (pan-tilt-zoom) tracking using YOLOv5.
+This script captures video from a webcam or file, detects objects in real-time by,
+feeding the stream into yolov5 model with your custom best.pt file,
+and sends target position commands to an Arduino via serial to adjust a pan-tilt servo.
+"""
+
+
 import argparse
 import cv2
 import numpy as np
@@ -22,7 +31,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative path
 
 # Import YOLOv5 modules
 from models.common import DetectMultiBackend
-from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadStreams
+from utils.dataloaders import LoadImages, LoadStreams
 from utils.general import check_img_size, non_max_suppression
 from utils.torch_utils import select_device, time_sync
 
@@ -43,6 +52,7 @@ except ImportError:
     colors = lambda x, y: (0, 255, 0)
 
 class PTZController:
+    # Change port to the port where arduino is connected.
     def __init__(self, port='/dev/ttyUSB0', baudrate=115200):
         self.serial = None
         try:
@@ -113,6 +123,7 @@ class PTZController:
             return False
         
         # Calculate target error
+        # Note: error_x is inverted to match servo direction logic.
         error_x = self.center_x - target_x 
         error_y = target_y - self.center_y
         
@@ -123,7 +134,7 @@ class PTZController:
             
         
         
-            scale = 0.25
+            scale = 0.25 # only take 25% of the overall error - I got this number from just trial and error
             # Map image coordinates to servo angles
             # Invert X axis so right is decreasing angle (adjust if needed)
             target_pan = int((error_x/self.frame_width)*180 * scale)
@@ -178,6 +189,7 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 def parse_args():
+    """ Define arguments for user execution""" 
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='../best.pt', help='model path')
     parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')
@@ -224,7 +236,7 @@ def main(opt):
     if pt:
         model.model.half() if half else model.model.float()
     
-    # Dataloader (optimized for Raspberry Pi)
+    # Dataloader for feeding images/video to the model
     source = str(opt.source)
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
