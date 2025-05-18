@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# benchy_tracker.py - Optimized YOLOv5 tracking for Raspberry Pi 5
 
 import argparse
 import cv2
@@ -45,7 +43,7 @@ except ImportError:
     colors = lambda x, y: (0, 255, 0)
 
 class PTZController:
-    def __init__(self, port='/dev/ttyACM0', baudrate=115200):
+    def __init__(self, port='/dev/ttyUSB0', baudrate=115200):
         self.serial = None
         try:
             self.serial = serial.Serial(port, baudrate, timeout=1)
@@ -115,59 +113,58 @@ class PTZController:
             return False
         
         # Calculate target error
-        error_x = target_x - self.center_x
+        error_x = self.center_x - target_x 
         error_y = target_y - self.center_y
         
-        # Skip small movements
-        if abs(error_x) < self.min_movement and abs(error_y) < self.min_movement:
-            return False
-        
-        # Map image coordinates to servo angles
-        # Invert X axis so right is decreasing angle (adjust if needed)
-        target_pan = int(180 - (target_x / self.frame_width * 180))
-        # Map Y axis (adjust if needed)
-        target_tilt = int(target_y / self.frame_height * 180)
-        
-        # Constrain to valid range
-        target_pan = max(0, min(180, target_pan))
-        target_tilt = max(0, min(180, target_tilt))
-        
-        # Update move time
-        self.last_move_time = current_time
-        
-        # Send command to Arduino
-        command = f"PT:{target_pan},{target_tilt}\n"
-        
-        if debug:
-            print(f"\nTarget: ({target_x:.1f}, {target_y:.1f}), Error: ({error_x:.1f}, {error_y:.1f})")
-            print(f"Sending: Pan={target_pan}, Tilt={target_tilt}")
-        
-        try:
-            self.serial.write(command.encode())
+        dead_zone = 25  # Number of pixels around the center to ignore
+        if abs(error_x) < dead_zone and abs(error_y) < dead_zone:
+            command = f"CENTERED\n"
+        else:
             
-            # Read response with timeout
-            start_time = time.time()
-            while self.serial.in_waiting == 0 and time.time() - start_time < 0.1:
-                time.sleep(0.01)
+        
+        
+            scale = 0.25
+            # Map image coordinates to servo angles
+            # Invert X axis so right is decreasing angle (adjust if needed)
+            target_pan = int((error_x/self.frame_width)*180 * scale)
+            # Map Y axis (adjust if needed)
+            target_tilt = int(error_y / self.frame_height * 180 * scale)
+            
+            # Update move time
+            self.last_move_time = current_time
+            
+            # Send command to Arduino
+            command = f"PT:{target_pan},{target_tilt}\n"
+        
+            if debug:
+                print(f"Sending: Pan={target_pan}, Tilt={target_tilt}")
+            
+            try:
+                self.serial.write(command.encode())
                 
-            if self.serial.in_waiting:
-                response = self.serial.readline().decode('utf-8').strip()
-                if debug:
-                    print(f"Arduino response: {response}")
-                
-                # Try to parse current position from Arduino response
-                if response.startswith("PT:"):
-                    try:
-                        parts = response.split(':')[1].split(',')
-                        self.current_pan = int(parts[0])
-                        self.current_tilt = int(parts[1])
-                    except:
-                        pass
-                        
-            return True
-        except Exception as e:
-            print(f"Error sending command: {e}")
-            return False
+                # Read response with timeout
+                start_time = time.time()
+                while self.serial.in_waiting == 0 and time.time() - start_time < 0.1:
+                    time.sleep(0.01)
+                    
+                if self.serial.in_waiting:
+                    response = self.serial.readline().decode('utf-8').strip()
+                    if debug:
+                        print(f"Arduino response: {response}")
+                    
+                    # Try to parse current position from Arduino response
+                    if response.startswith("PT:"):
+                        try:
+                            parts = response.split(':')[1].split(',')
+                            self.current_pan = int(parts[0])
+                            self.current_tilt = int(parts[1])
+                        except:
+                            pass
+                            
+                return True
+            except Exception as e:
+                print(f"Error sending command: {e}")
+                return False
 
 # Global PTZ controller for signal handlers
 global_ptz = None
@@ -193,7 +190,7 @@ def parse_args():
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --classes 0, or --classes 0 2 3')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-    parser.add_argument('--arduino', type=str, default='/dev/ttyACM0', help='Arduino port')
+    parser.add_argument('--arduino', type=str, default='/dev/ttyUSB0', help='Arduino port')
     parser.add_argument('--baudrate', type=int, default=115200, help='Arduino baudrate')
     parser.add_argument('--debug', action='store_true', help='Print debug information')
     parser.add_argument('--move-interval', type=float, default=0.05, help='Movement interval in seconds')
