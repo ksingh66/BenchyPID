@@ -5,6 +5,7 @@ An object detection and tracking system that uses YOLOv5 for object recognition 
 ## Overview + Demo
 
 Demo video: https://www.youtube.com/watch?v=3AuYJmLxwaw
+
 BenchyPID combines computer vision with hardware control to create a system that can:
 
 - Detect objects using YOLOv5 models
@@ -34,6 +35,7 @@ BenchyPID combines computer vision with hardware control to create a system that
 ## Installation
 
 - Check our this video for a guide : https://www.youtube.com/watch?v=vcFRip1ln-0&feature=youtu.be
+  
 
 ### 1. Clone the Repository
 
