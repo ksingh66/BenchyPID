@@ -5,8 +5,8 @@
 
 // PID parameters for each axis
 float Kp[2] = {0.2, 0.2};  // [pan, tilt]
-float Ki[2] = {0.0, 0.0};
-float Kd[2] = {0.05, 0.05};
+float Ki[2] = {0.0, 0.0};  // [pan, tilt]
+float Kd[2] = {0.0, 0.0};  // [pan, tilt]
 
 // PID state
 float integral[2] = {0, 0};
@@ -16,13 +16,13 @@ float previous_error[2] = {0, 0};
 Servo panServo;
 Servo tiltServo;
 
-// Current servo angles
+// Current servo angles - Centered
 int panAngle = 90;
 int tiltAngle = 90;
 
 // Time tracking
 unsigned long lastUpdate = 0;
-unsigned long updateInterval = 50;  // 50 ms
+unsigned long updateInterval = 50;  // 50 ms refresh rate- lower this to increase responsiveness
 
 void setup() {
   Serial.begin(115200);
@@ -72,7 +72,7 @@ void loop() {
     } else if (command == "RESET") {
       resetServos();
     } else if (command == "CENTERED") {
-      // Optional: No action needed if centered
+      // dont do nothing if already centered
     }
   }
 }

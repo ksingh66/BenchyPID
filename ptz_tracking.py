@@ -16,8 +16,9 @@ import time
 import torch
 import torch.backends.cudnn as cudnn
 import os
-import atexit  # Add this for cleanup on exit
-import signal  # Add this for handling signals
+import atexit  
+import signal 
+import subprocess 
 
 from pathlib import Path
 import sys
@@ -134,7 +135,7 @@ class PTZController:
             
         
         
-            scale = 0.25 # only take 25% of the overall error - I got this number from just trial and error
+            scale = 0.50 # only take 25% of the overall error - I got this number from just trial and error
             # Map image coordinates to servo angles
             # Invert X axis so right is decreasing angle (adjust if needed)
             target_pan = int((error_x/self.frame_width)*180 * scale)
@@ -207,6 +208,8 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='Print debug information')
     parser.add_argument('--move-interval', type=float, default=0.05, help='Movement interval in seconds')
     parser.add_argument('--min-movement', type=int, default=2, help='Minimum pixel movement to send command')
+    parser.add_argument('--zoom', action='store_true', help='Zoom into the detected object')
+
     opt = parser.parse_args()
     
     # Handle imgsz
@@ -218,6 +221,16 @@ def parse_args():
     return opt
 
 def main(opt):
+    
+    # Run the commands needed to lower exposure
+    try:
+        subprocess.run(['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl=auto_exposure=1'], check=True)
+        subprocess.run(['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl=exposure_time_absolute=300'], check=True) # the 300 may need to be changed to a different number depending on the eviornment
+        print("Camera exposure settings applied.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to set camera exposure: {e}")
+        
+        
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -291,6 +304,8 @@ def main(opt):
             
             # Process detections
             for i, det in enumerate(pred):  # per image
+                best_det = None  # Ensure variable exists even if no detection
+
                 if webcam:  # batch_size >= 1
                     p, im0, frame = path[i], im0s[i].copy(), dataset.count
                 else:
@@ -381,9 +396,30 @@ def main(opt):
                         # Show servo positions
                         cv2.putText(im0, f"Pan: {ptz.current_pan}", (20, h-30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                         cv2.putText(im0, f"Tilt: {ptz.current_tilt}", (20, h-60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                        
+                        if opt.zoom:
+                            # Get crop size with some padding
+                            zoom_padding = 50
+                            x1_zoom = max(0, x1 - zoom_padding)
+                            y1_zoom = max(0, y1 - zoom_padding)
+                            x2_zoom = min(w, x2 + zoom_padding)
+                            y2_zoom = min(h, y2 + zoom_padding)
+
+                            # Crop and resize to original frame size for zoom effect
+                            zoom_crop = im0[y1_zoom:y2_zoom, x1_zoom:x2_zoom]
+                            if zoom_crop.size > 0:
+                                im0_result = cv2.resize(zoom_crop, (w, h))
+                            else:
+                                print("Warning: Empty zoom crop. Skipping zoom.")
+
                 
                 # Stream results
-                im0_result = annotator.result() if (has_annotator and annotator is not None) else im0
+                if opt.zoom and best_det is not None and 'zoom_crop' in locals() and zoom_crop.size > 0:
+                    pass  # Already set im0_result above
+                else:
+                    im0_result = annotator.result() if (has_annotator and annotator is not None) else im0
+
+
                 if opt.view_img:
                     cv2.imshow(str(p), im0_result)
                     key = cv2.waitKey(1) & 0xFF
