@@ -34,7 +34,7 @@ BenchyPID combines computer vision with hardware control to create a system that
 
 ## Installation
 
-- Check our this video for a guide : https://www.youtube.com/watch?v=vcFRip1ln-0&feature=youtu.be
+- Check out this video for a guide : https://www.youtube.com/watch?v=vcFRip1ln-0&feature=youtu.be
   
 
 ### 1. Clone the Repository
