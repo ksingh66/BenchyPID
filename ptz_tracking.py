@@ -1,9 +1,8 @@
 
 
 """
-Object detection and Arduino-controlled PTZ (pan-tilt-zoom) tracking using YOLOv5.
-This script captures video from a webcam or file, detects objects in real-time by,
-feeding the stream into yolov5 model with your custom best.pt file,
+This script is supposed to capture video from a webcam, then detect a benchy in real-time by,
+feeding the stream into a yolov5 model with your custom best.pt file,
 and sends target position commands to an Arduino via serial to adjust a pan-tilt servo.
 """
 
